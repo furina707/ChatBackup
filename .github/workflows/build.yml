@@ -1,8 +1,9 @@
-name: Build Android APK and Desktop TUI
+name: Build and Release ChatBackup
 
 on:
   push:
     branches: [ "main", "master" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -37,11 +38,16 @@ jobs:
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           gradle assembleDebug --stacktrace
 
+      - name: Copy & Rename APK
+        run: |
+          mkdir -p release_assets
+          cp android/app/build/outputs/apk/debug/app-debug.apk release_assets/ChatBackup-Agent.apk
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ChatBackup-Agent-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: release_assets/ChatBackup-Agent.apk
           if-no-files-found: error
 
   build-desktop:
@@ -65,14 +71,51 @@ jobs:
       - name: Verify modules
         run: |
           python -c "from desktop.core.wechat_crypto import compute_wechat_key; print('Test key:', compute_wechat_key('test', '123'))"
+          python -c "from desktop.core.updater import SoftwareUpdater; print('Updater initialized:', SoftwareUpdater().current_version)"
 
       - name: Package Windows Executable
         run: |
           pyinstaller --noconfirm --onedir --name "ChatBackup-TUI" --collect-all textual --collect-all rich desktop/main.py
 
+      - name: Compress Desktop Release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/ChatBackup-TUI/*" -DestinationPath "dist/ChatBackup-Windows-Desktop.zip" -Force
+
       - name: Upload Desktop Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ChatBackup-Windows-Desktop
-          path: dist/ChatBackup-TUI
-          if-no-files-found: warn
+          path: dist/ChatBackup-Windows-Desktop.zip
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-apk, build-desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download APK Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ChatBackup-Agent-APK
+          path: release_out
+
+      - name: Download Desktop Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ChatBackup-Windows-Desktop
+          path: release_out
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release_out/ChatBackup-Agent.apk
+            release_out/ChatBackup-Windows-Desktop.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false

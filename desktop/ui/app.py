@@ -14,6 +14,7 @@ from desktop.core.api_client import ApiClient
 from desktop.core.wechat_crypto import compute_wechat_key, WeChatDatabase, decrypt_wechat_db
 from desktop.core.qq_parser import QqDatabase
 from desktop.core.exporter import ChatExporter
+from desktop.core.updater import SoftwareUpdater, CURRENT_VERSION, DEFAULT_REPO, UpdateInfo
 
 class ChatBackupApp(App):
     CSS = """
@@ -53,6 +54,15 @@ class ChatBackupApp(App):
         width: 68%;
         padding: 1;
     }
+    #update-left-panel {
+        width: 48%;
+        border-right: solid #30363d;
+        padding: 1;
+    }
+    #update-right-panel {
+        width: 52%;
+        padding: 1;
+    }
     .msg-bubble-sent {
         background: #238636;
         color: #ffffff;
@@ -79,6 +89,7 @@ class ChatBackupApp(App):
         self.adb = AdbClient()
         self.api = ApiClient()
         self.discovery = DeviceDiscovery()
+        self.updater = SoftwareUpdater()
         self.output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
         os.makedirs(self.output_dir, exist_ok=True)
         
@@ -88,6 +99,9 @@ class ChatBackupApp(App):
         self.current_talker = ""
         self.current_talker_name = ""
         self.discovered_devices = {}
+        self.latest_update_info = None
+        self.selected_asset_url: str = ""
+        self.selected_asset_name: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -142,11 +156,39 @@ class ChatBackupApp(App):
                             yield Button("导出当前会话为 CSV", id="btn-export-csv", variant="default")
                         yield VerticalScroll(id="chat-messages-container")
 
+            # Tab 4: 软件在线更新 (HTTPS)
+            with TabPane("4. 软件升级 (HTTPS)", id="tab-update"):
+                with Horizontal():
+                    with Vertical(classes="panel", id="update-left-panel"):
+                        yield Label("版本与更新配置", classes="title-label")
+                        yield Label(f"当前版本: [bold green]{CURRENT_VERSION}[/bold green]")
+                        yield Label("GitHub 仓库 (Owner/Repo):")
+                        yield Input(value=DEFAULT_REPO, id="input-update-repo", placeholder="例如 furina707/ChatBackup")
+                        yield Label("自定义 HTTPS 更新源 (可选):")
+                        yield Input(value="", id="input-update-custom-url", placeholder="留空则自动请求 GitHub 官方 API")
+                        with Horizontal():
+                            yield Button("检查新版本 (HTTPS)", id="btn-check-update", variant="primary")
+                            yield Button("下载选中的更新包", id="btn-download-update", variant="success")
+                        yield Static("未检测更新", id="update-status-badge")
+                        yield Label("可用更新资产列表 (点击行选中):", classes="title-label")
+                        yield DataTable(id="update-assets-table")
+
+                    with Vertical(classes="panel", id="update-right-panel"):
+                        yield Label("更新说明 (Release Notes)", classes="title-label")
+                        yield RichLog(id="update-changelog-log", highlight=True, markup=True)
+                        yield Label("下载进度：", id="lbl-update-progress")
+                        yield ProgressBar(id="update-progress-bar", show_percentage=True, show_eta=True)
+
         yield Footer()
 
     async def on_mount(self) -> None:
         table = self.query_one("#discovered-table", DataTable)
         table.add_columns("设备名称/型号", "局域网 IP", "端口", "通信方式")
+
+        update_table = self.query_one("#update-assets-table", DataTable)
+        update_table.add_columns("文件名", "大小", "下载地址")
+        update_table.cursor_type = "row"
+
         # 启动 UDP 局域网无感自动发现
         await self.discovery.start_listen(self._on_device_discovered)
 
@@ -164,6 +206,19 @@ class ChatBackupApp(App):
             table.add_row(model, ip, str(port), "无线 Wi-Fi 直连", key=ip)
             # 自动把 IP 填入输入框
             self.query_one("#input-ip", Input).value = ip
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """用户在表格中选择行"""
+        if event.data_table.id == "update-assets-table":
+            row_key = event.row_key.value
+            if self.latest_update_info:
+                for a in self.latest_update_info.assets:
+                    if a.get("download_url") == row_key:
+                        self.selected_asset_url = a.get("download_url")
+                        self.selected_asset_name = a.get("name")
+                        status_badge = self.query_one("#update-status-badge", Static)
+                        status_badge.update(f"[cyan]已选中更新包:[/cyan] {self.selected_asset_name}")
+                        break
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -268,6 +323,86 @@ class ChatBackupApp(App):
             out_csv = os.path.join(self.output_dir, f"{self.current_talker}_export.csv")
             ChatExporter.export_to_csv(self.active_messages, out_csv)
             log.write(f"[bold green][✔] 已成功导出 CSV 数据表: file:///{out_csv.replace(os.sep, '/')}[/bold green]")
+
+        elif btn_id == "btn-check-update":
+            repo = self.query_one("#input-update-repo", Input).value.strip()
+            custom_url = self.query_one("#input-update-custom-url", Input).value.strip()
+            status_badge = self.query_one("#update-status-badge", Static)
+            changelog_log = self.query_one("#update-changelog-log", RichLog)
+            table = self.query_one("#update-assets-table", DataTable)
+
+            status_badge.update("[cyan]正在通过 HTTPS 请求最新发布信息...[/cyan]")
+            changelog_log.clear()
+            table.clear()
+            self.updater.set_repo(repo)
+
+            try:
+                info = await self.updater.check_update(custom_url or None)
+                self.latest_update_info = info
+                
+                if info.has_update:
+                    status_badge.update(
+                        f"[bold green]🚀 发现新版本: {info.latest_version}[/bold green] (当前: {info.current_version})\n"
+                        f"发布名称: {info.release_name}\n发布时间: {info.published_at}"
+                    )
+                else:
+                    status_badge.update(
+                        f"[bold cyan]✔ 当前已是最新版本 ({info.current_version})[/bold cyan]\n"
+                        f"最新远端版本: {info.latest_version}"
+                    )
+
+                changelog_log.write(f"[bold yellow]=== {info.release_name} ({info.latest_version}) ===[/bold yellow]\n")
+                changelog_log.write(info.release_notes + "\n")
+                changelog_log.write(f"\n[link={info.html_url}]访问 GitHub Release 页面[/link]")
+
+                for a in info.assets:
+                    size_mb = f"{a['size'] / (1024 * 1024):.2f} MB" if a['size'] > 0 else "未知"
+                    table.add_row(a["name"], size_mb, a["download_url"], key=a["download_url"])
+
+                if info.assets:
+                    # 默认选中第一个
+                    self.selected_asset_url = info.assets[0]["download_url"]
+                    self.selected_asset_name = info.assets[0]["name"]
+                    changelog_log.write(f"\n[green]已默认预选更新包: {self.selected_asset_name}[/green]")
+
+            except Exception as e:
+                status_badge.update(f"[bold red]✘ 检查更新失败: {str(e)}[/bold red]")
+                changelog_log.write(f"[red]检查更新出错: {str(e)}[/red]")
+
+        elif btn_id == "btn-download-update":
+            changelog_log = self.query_one("#update-changelog-log", RichLog)
+            status_label = self.query_one("#lbl-update-progress", Label)
+            p_bar = self.query_one("#update-progress-bar", ProgressBar)
+
+            if not self.selected_asset_url:
+                changelog_log.write("[yellow][!] 请先点击“检查新版本”并在列表中选中需要下载的资产包[/yellow]")
+                return
+
+            dest_file = os.path.join(self.output_dir, "updates", self.selected_asset_name or "update_package.bin")
+            changelog_log.write(f"[cyan][*] 开始通过 HTTPS 安全下载: {self.selected_asset_name}...[/cyan]")
+
+            def on_update_progress(downloaded, total, speed):
+                mb_speed = speed / (1024 * 1024)
+                if total > 0:
+                    p_bar.update(total=total, progress=downloaded)
+                    status_label.update(
+                        f"下载中: {downloaded/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB ({mb_speed:.2f} MB/s)"
+                    )
+                else:
+                    status_label.update(f"下载中: {downloaded/(1024*1024):.1f}MB ({mb_speed:.2f} MB/s)")
+
+            try:
+                saved_path = await self.updater.download_asset(
+                    self.selected_asset_url,
+                    dest_file,
+                    on_update_progress
+                )
+                status_label.update(f"[bold green]✔ 更新文件下载完成！[/bold green]")
+                changelog_log.write(f"[bold green][✔] 更新文件已保存在: {saved_path}[/bold green]")
+                changelog_log.write("[yellow]提示: 可直接关闭当前程序并运行新版程序完成升级。[/yellow]")
+            except Exception as e:
+                status_label.update(f"[red]下载失败: {str(e)}[/red]")
+                changelog_log.write(f"[red][✘] 下载失败: {str(e)}[/red]")
 
     def _load_wechat_contacts(self):
         """加载微信联系人到左侧列表"""

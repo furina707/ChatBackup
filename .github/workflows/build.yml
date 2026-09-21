@@ -75,7 +75,7 @@ jobs:
 
       - name: Package Windows Executable
         run: |
-          pyinstaller --noconfirm --onedir --name "ChatBackup-TUI" --collect-all textual --collect-all rich desktop/main.py
+          pyinstaller --noconfirm --onedir --name "ChatBackup-TUI" --paths . --collect-all desktop --collect-all textual --collect-all rich run_desktop.py
 
       - name: Compress Desktop Release
         shell: pwsh

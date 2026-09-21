@@ -1,14 +1,15 @@
 import sys
 import os
 
+# 兼容源码启动与 PyInstaller 打包环境
 if getattr(sys, "frozen", False):
     base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     if base_dir not in sys.path:
         sys.path.insert(0, base_dir)
 else:
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    if base_dir not in sys.path:
+        sys.path.insert(0, base_dir)
 
 from desktop.ui.app import main
 

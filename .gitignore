@@ -27,5 +27,6 @@ android/local.properties
 *.iml
 
 # 系统临时文件
+build_artifacts/
 .DS_Store
 Thumbs.db

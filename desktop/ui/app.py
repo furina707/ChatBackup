@@ -27,10 +27,9 @@ class ChatBackupApp(App):
     }
     .panel {
         background: #161b22;
-        border: solid #30363d;
+        border: round #30363d;
         padding: 1 2;
         margin: 1;
-        border-radius: 1;
     }
     .status-badge-ok {
         color: #3fb950;
@@ -68,15 +67,14 @@ class ChatBackupApp(App):
         color: #ffffff;
         margin: 1 0 1 10;
         padding: 1 2;
-        border-radius: 1;
+        border: round #2ea043;
     }
     .msg-bubble-recv {
         background: #21262d;
         color: #e6edf3;
         margin: 1 10 1 0;
         padding: 1 2;
-        border-radius: 1;
-        border: solid #30363d;
+        border: round #30363d;
     }
     """
 
